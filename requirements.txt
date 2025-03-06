@@ -10,3 +10,4 @@ tqdm
 tabulate
 termcolor
 packaging
+opencv-python-headless
