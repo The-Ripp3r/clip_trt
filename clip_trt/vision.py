@@ -10,8 +10,11 @@ import PIL
 import torch
 import torch2trt
 import tensorrt
+import cv2
 
 import torchvision.transforms as T
+import torch.nn.functional as F
+import numpy as np
 
 from packaging.version import Version
 from transformers import CLIPVisionModel as CLIPVisionModelHF, CLIPVisionModelWithProjection, SiglipVisionModel
@@ -215,8 +218,13 @@ class CLIPVisionModel():
                 image = image.permute(0, 3, 1, 2)
                 
             image = self.preprocessor(image)
-            model_output = self.model(image) #, output_hidden_states=hidden_state is not None)   #.pooler_output  .last_hidden_state
+            model_output = self.model(image, output_hidden_states=True, output_attentions=True) #, output_hidden_states=hidden_state is not None)   #.pooler_output  .last_hidden_state
             output_embeds = model_output['image_embeds' if self.config.projector else 'pooler_output']
+
+            attention_weights=model_output["attentions"]
+            last_layer_attention = attention_weights[-1]
+            avg_attention_map = last_layer_attention.mean(dim=1) # Average across heads
+            self.draw_heatmap(avg_attention_map)
   
             if hidden_state is not None:
                 hidden_tensor = _convert_tensor(model_output['hidden_states'][hidden_state])
@@ -245,3 +253,33 @@ class CLIPVisionModel():
     def __call__(self, image, **kwargs):
         return self.embed_image(image, **kwargs)
         
+
+    def draw_heatmap(self, attention_map):
+        # Resize the attention map to match the image size
+        attn_map_resized = F.interpolate(avg_attention_map.unsqueeze(1), size=(image_height, image_width), mode="bilinear")
+        heatmap = attn_map_resized.squeeze().cpu().numpy()
+
+        # Normalize heatmap to [0, 255] for visualization
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min()) * 255
+        heatmap = heatmap.astype(np.uint8)
+
+        # Threshold the heatmap to get high attention regions
+        _, thresh = cv2.threshold(heatmap, 128, 255, cv2.THRESH_BINARY)  # Adjust threshold as needed
+
+        # Find contours for bounding boxes
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Convert PIL image to OpenCV format if needed
+        if isinstance(image, PIL.Image.Image):
+            image = np.array(image)
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+        # Draw bounding boxes on the image
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)  # Green box
+
+        # Display the image in a pop-up window
+        cv2.imshow("Attention Heatmap Bounding Boxes", image)
+        cv2.waitKey(1)  # Wait for user input to close window
+        cv2.destroyAllWindows()
